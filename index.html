@@ -80,6 +80,10 @@ input{font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--l
 .chev svg{transition:transform .2s ease}
 .loan.closed .chev svg{transform:rotate(-90deg)}
 .details{display:grid;gap:10px}
+.hint{font-size:.75rem;color:var(--muted);margin:0}
+.next{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;font-size:.8rem;color:var(--muted)}
+.next b{color:var(--fg);font-weight:600}
+.auto{font-size:.7rem;font-weight:600;color:var(--green);background:var(--green-soft);padding:2px 8px;border-radius:99px}
 .top{align-items:center}
 /* Mobile : cibles tactiles confortables, pas de zoom iOS sur les champs */
 input{font-size:16px;min-height:44px}
@@ -114,7 +118,11 @@ body{margin:0;-webkit-text-size-adjust:100%}
       <label>Montant total (€)<input id="f-total" type="number" inputmode="decimal" min="0" step="0.01" required></label>
       <label>Mensualité (€)<input id="f-monthly" type="number" inputmode="decimal" min="0" step="0.01" required></label>
     </div>
-    <label>Montant restant à payer (€)<input id="f-left" type="number" inputmode="decimal" min="0" step="0.01" required></label>
+    <div class="row">
+      <label>Restant à payer (€)<input id="f-left" type="number" inputmode="decimal" min="0" step="0.01" required></label>
+      <label>Jour du prélèvement<input id="f-day" type="number" inputmode="numeric" min="1" max="31" step="1" placeholder="Ex. 5"></label>
+    </div>
+    <p class="hint">Avec un jour de prélèvement, la mensualité est déduite automatiquement chaque mois à cette date.</p>
     <p class="err" id="err" hidden></p>
     <div class="formbtns">
       <button type="button" class="ghost" id="cancel">Annuler</button>
@@ -135,6 +143,42 @@ try{localStorage.removeItem('credits-v1')}catch(e){}
 let editId=null;
 const save=()=>{try{localStorage.setItem(KEY,JSON.stringify(loans))}catch(e){}};
 const $=id=>document.getElementById(id);
+
+/* --- Dates de prélèvement --- */
+const pad=n=>String(n).padStart(2,'0');
+const isoDay=d=>`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+const parseDay=s=>{const [y,m,d]=s.split('-').map(Number);return new Date(y,m-1,d)};
+const today=()=>{const t=new Date();return new Date(t.getFullYear(),t.getMonth(),t.getDate())};
+// Date du prélèvement d'un mois donné (le 31 devient le 30 ou le 28 selon le mois)
+const dueIn=(y,m,day)=>new Date(y,m,Math.min(day,new Date(y,m+1,0).getDate()));
+// Nombre de prélèvements passés entre la dernière vérification (exclue) et aujourd'hui (inclus)
+function dueCount(fromISO,day){
+  const from=parseDay(fromISO), to=today(); let n=0;
+  const start=from.getFullYear()*12+from.getMonth(), end=to.getFullYear()*12+to.getMonth();
+  for(let k=start;k<=end;k++){
+    const d=dueIn(Math.floor(k/12),k%12,day); if(d>from&&d<=to) n++;
+  }
+  return n;
+}
+function nextDue(day){
+  const t=today(); let d=dueIn(t.getFullYear(),t.getMonth(),day);
+  if(d<=t) d=dueIn(t.getFullYear(),t.getMonth()+1,day);
+  return d;
+}
+const fmtDate=d=>d.toLocaleDateString('fr-FR',{day:'numeric',month:'long'});
+// Applique les mensualités échues depuis la dernière ouverture
+function sync(){
+  let changed=false; const t=isoDay(today());
+  loans.forEach(l=>{
+    if(!l.day) return;
+    if(!l.lastCheck){l.lastCheck=t;changed=true;return}
+    if(l.lastCheck===t) return;
+    const n=dueCount(l.lastCheck,l.day);
+    if(n>0&&l.left>0){l.left=Math.max(0,+(l.left-n*l.monthly).toFixed(2))}
+    l.lastCheck=t; changed=true;
+  });
+  if(changed){save();render()}
+}
 
 function render(){
   const list=$('list'); list.innerHTML='';
@@ -162,8 +206,9 @@ function render(){
         <div><span>Mensualité</span><strong>${eur(l.monthly)}</strong></div>
         <div><span>Restant</span><strong>${eur(Math.max(0,l.left))}</strong></div>
       </div>
+      ${l.day&&l.left>0?`<div class="next"><span>Prochain prélèvement : <b>${fmtDate(nextDue(l.day))}</b></span><span class="auto">Auto chaque mois</span></div>`:''}
       <div class="actions">
-        ${l.left>0?`<button class="ghost" data-pay="${l.id}">Payer une mensualité</button>`:''}
+        ${l.left>0&&!l.day?`<button class="ghost" data-pay="${l.id}">Payer une mensualité</button>`:''}
         <button class="ghost" data-edit="${l.id}">Modifier</button>
         <button class="ghost del" data-del="${l.id}">Supprimer</button>
         ${months?`<span class="sum months" style="margin:auto 0 auto auto">≈ ${months} mois restants</span>`:''}
@@ -179,7 +224,7 @@ function render(){
 function openForm(l){
   editId=l?l.id:null;
   $('f-name').value=l?l.name:''; $('f-total').value=l?l.total:'';
-  $('f-monthly').value=l?l.monthly:''; $('f-left').value=l?l.left:'';
+  $('f-monthly').value=l?l.monthly:''; $('f-left').value=l?l.left:''; $('f-day').value=l&&l.day?l.day:'';
   $('save').textContent=l?'Enregistrer':'Ajouter';
   $('err').hidden=true; $('form').hidden=false; $('f-name').focus();
 }
@@ -191,8 +236,11 @@ $('form').addEventListener('submit',e=>{
   const name=$('f-name').value.trim(), total=+$('f-total').value, monthly=+$('f-monthly').value;
   let left=$('f-left').value===''?total:+$('f-left').value;
   if(left>total){$('err').textContent='Le montant restant ne peut pas dépasser le montant total.';$('err').hidden=false;return}
-  if(editId!==null){Object.assign(loans.find(l=>l.id===editId),{name,total,monthly,left})}
-  else loans.push({id:Date.now(),name,total,monthly,left});
+  const dv=$('f-day').value, day=dv===''?null:Math.min(31,Math.max(1,Math.round(+dv)));
+  // Le restant saisi est la valeur d'aujourd'hui : on repart de cette date pour les prochaines déductions
+  const lastCheck=isoDay(today());
+  if(editId!==null){Object.assign(loans.find(l=>l.id===editId),{name,total,monthly,left,day,lastCheck})}
+  else loans.push({id:Date.now(),name,total,monthly,left,day,lastCheck});
   save(); $('form').hidden=true; render();
 });
 $('list').addEventListener('click',e=>{
@@ -207,6 +255,9 @@ $('list').addEventListener('click',e=>{
   save(); render();
 });
 render();
+sync();
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)sync()});
+setInterval(sync,60*60*1000);
 if('serviceWorker' in navigator){addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}))}
 </script>
 </body>

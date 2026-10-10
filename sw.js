@@ -1,6 +1,6 @@
 // Service worker : permet d'ouvrir l'app même sans connexion.
 // Change le numéro de version quand tu modifies index.html pour forcer la mise à jour.
-const CACHE = 'mes-credits-v2';
+const CACHE = 'mes-credits-v3';
 const FILES = ['./', './index.html', './manifest.json', './icon-192.png', './icon-512.png', './apple-touch-icon.png'];
 
 self.addEventListener('install', e => {
